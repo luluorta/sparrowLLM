@@ -149,12 +149,13 @@ class LlamaWeight(WeightBase):
             (self.model_config.vocab_size, self.model_config.hidden_size),
             self.dtype
         ))
-        self.register_weight(RegisteredWeightItem(
-            "lm_head",
-            "lm_head.weight",
-            (self.model_config.vocab_size, self.model_config.hidden_size),
-            self.dtype
-        ))
+        if not self.model_config.tie_word_embeddings:
+            self.register_weight(RegisteredWeightItem(
+                "lm_head",
+                "lm_head.weight",
+                (self.model_config.vocab_size, self.model_config.hidden_size),
+                self.dtype
+            ))
         self.register_weight(RegisteredWeightItem(
             "final_norm",
             "model.norm.weight",
@@ -168,6 +169,8 @@ class LlamaWeight(WeightBase):
             self.layers.append(layer)
 
     def _post_process_after_load(self, getter: callable):
+        if self.model_config.tie_word_embeddings:
+            self.lm_head = self.wte
         for layer in self.layers:
             layer.load_weights(getter)
 

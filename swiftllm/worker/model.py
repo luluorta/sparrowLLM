@@ -175,17 +175,48 @@ class LlamaModel:
         )
 
     def _init_to_get_rotary(self):
-        rope_scaling_factor = self.model_config.rope_scaling
+        rope_scaling = self.model_config.rope_scaling
         base = self.model_config.rope_theta
         max_position_embeddings = self.model_config.max_position_embeddings
-        max_seq_len = max_position_embeddings * rope_scaling_factor
+        max_seq_len = max_position_embeddings
 
         inv_freq = 1.0 / (base ** (torch.arange(0, self.model_config.head_dim, 2, device="cuda", dtype=torch.float32) / self.model_config.head_dim))
-        t = torch.arange(max_seq_len + 128, device="cuda", dtype=torch.float32) / rope_scaling_factor
+        if rope_scaling is not None:
+            inv_freq = LlamaModel._compute_llama3_inv_freq(inv_freq, rope_scaling)
+        t = torch.arange(max_seq_len + 128, device="cuda", dtype=torch.float32)
         freqs = torch.outer(t, inv_freq)
 
         self._cos_cached = torch.cos(freqs).to(torch.float16)
         self._sin_cached = torch.sin(freqs).to(torch.float16)
+
+    @staticmethod
+    def _compute_llama3_inv_freq(inv_freqs: torch.Tensor, rope_scaling):
+        assert rope_scaling["rope_type"] == "llama3"
+        scaling_factor: float = rope_scaling["factor"]
+        low_freq_factor: float = rope_scaling["low_freq_factor"]
+        high_freq_factor: float = rope_scaling["high_freq_factor"]
+        orig_max_position: int = rope_scaling["original_max_position_embeddings"]
+
+        low_freq_wavelen = orig_max_position / low_freq_factor
+        high_freq_wavelen = orig_max_position / high_freq_factor
+
+        wave_len = 2 * math.pi / inv_freqs
+        if low_freq_factor != high_freq_factor:
+            smooth = (orig_max_position / wave_len - low_freq_factor
+                      ) / (high_freq_factor - low_freq_factor)
+        else:
+            smooth = 0
+        new_freqs = torch.where(
+            wave_len < high_freq_wavelen,
+            inv_freqs,
+            torch.where(
+                wave_len > low_freq_wavelen,
+                inv_freqs / scaling_factor,
+                (1 - smooth) * inv_freqs / scaling_factor +
+                smooth * inv_freqs,
+            ),
+        )
+        return new_freqs
 
     @torch.inference_mode()
     def _forward(
