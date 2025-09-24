@@ -36,6 +36,5 @@ class LlamaPostLayer:
             self.model_config.rms_norm_eps
         )
         logits = linear(last_input, self.weights.lm_head)    # [batch_size, vocab_size]
-        output_tokens = torch.argmax(logits, dim=1)
-        return output_tokens
+        return logits
     
