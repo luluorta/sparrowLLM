@@ -10,6 +10,7 @@ from swiftllm.worker.block_manager import BlockManager
 from swiftllm.utils import GB
 import swiftllm_c
 
+from .kernels.decode import sample
 from .layers.pre_layer import LlamaPreLayer
 from .layers.transformer_layer import LlamaTransformerLayer
 from .layers.post_layer import LlamaPostLayer
@@ -58,7 +59,7 @@ class LlamaModel:
 
         # Block manager
         self.cpu_block_manager = self.gpu_block_manager = None
-        
+
     @torch.inference_mode()
     def load_weights(self):
         """
@@ -129,7 +130,7 @@ class LlamaModel:
 
         torch.cuda.empty_cache()
         return num_gpu_blocks
-    
+
     @torch.inference_mode()
     def init_kvcache_and_swap(self, num_blocks: int):
         self.num_blocks = num_blocks
@@ -245,9 +246,9 @@ class LlamaModel:
                 infer_state,
             )
         input_embds += residual_buf
-        output_tokens = self.post_layer.forward(input_embds, infer_state)
-        return output_tokens
-    
+        logits = self.post_layer.forward(input_embds, infer_state)
+        return logits
+
     @torch.inference_mode()
     def forward(
         self,
@@ -255,6 +256,8 @@ class LlamaModel:
         seq_ids_list: list[int],     # [batch_size]
         decoding_seq_lens_list: list[int], # [num_decoding_seqs]
         ignore_kvcache: bool = False,   # Skip actions related to kv cache, useful when profiling the number of kv blocks
+        temperature: float = 0,      # The temperature value for sampling. Defaults to 0
+        top_k: int | None = None,    # The top_k value for sampling. Defaults to None
     ) -> list[int]:
         """
         Run a forward pass of the LlamaModel.
@@ -353,10 +356,15 @@ class LlamaModel:
             ignore_kvcache = ignore_kvcache
         )
 
-        return self._forward(
+        logits = self._forward(
             torch.tensor(flattened_input_ids, dtype=torch.int32, device="cuda"),
             infer_state
-        ).tolist()
+        )
+        if temperature > 0:
+            output_tokens = sample(logits, temperature, top_k)
+        else:
+            output_tokens = torch.argmax(logits, dim=1).tolist()
+        return output_tokens
 
     def _swap(
         self,
@@ -377,7 +385,7 @@ class LlamaModel:
             self.k_cache, self.v_cache,
             self.k_swap, self.v_swap
         )
-        
+
     @torch.inference_mode()
     def swap_in_seqs(
         self,
@@ -387,7 +395,7 @@ class LlamaModel:
         Swap in (move blocks from CPU to GPU) the specified sequences.
         """
         self._swap(seq_ids_list, True)
-    
+
     @torch.inference_mode()
     def swap_out_seqs(
         self,
